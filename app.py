@@ -841,15 +841,30 @@ def render_forecast_chart(forecast_df, hist_df, metric_label, currency):
 ####################################
 # Groq Client
 ####################################
+def get_effective_api_key(session_key: str, env_var: str):
+    """
+    Resolve an API key: a key pasted into Settings for this session takes
+    priority over the environment variable. Nothing is ever written to disk.
+    """
+    session_val = st.session_state.get(session_key, "").strip()
+    if session_val:
+        return session_val
+    return os.environ.get(env_var, "")
+
+
 @st.cache_resource(show_spinner=False)
-def get_groq_client():
-    api_key = os.environ.get("GROQ_API_KEY")
+def _build_groq_client(api_key: str):
     if not api_key or not GROQ_SDK_AVAILABLE:
         return None
     try:
         return Groq(api_key=api_key)
     except Exception:
         return None
+
+
+def get_groq_client():
+    api_key = get_effective_api_key("groq_api_key_override", "GROQ_API_KEY")
+    return _build_groq_client(api_key)
 
 
 def build_financial_context(summary, health, forecast_note, currency):
@@ -869,8 +884,9 @@ Financial Summary:
 def ask_ai_advisor(question, context, model_name):
     client = get_groq_client()
     if client is None:
-        return ("\u26a0\ufe0f Groq API key not found or SDK not installed. Set the `GROQ_API_KEY` "
-                "environment variable to enable the AI Advisor.")
+        return ("\u26a0\ufe0f Groq API key not found or SDK not installed. Paste a key in "
+                "Settings \u2192 API Keys, or set the `GROQ_API_KEY` environment variable, "
+                "to enable the AI Advisor.")
     system_prompt = (
         "You are FinPilot AI, a professional, encouraging, and precise personal financial advisor "
         "for an Indian banking context. Use the provided financial context to give specific, "
@@ -898,8 +914,7 @@ def ask_ai_advisor(question, context, model_name):
 # Mistral Client
 ####################################
 @st.cache_resource(show_spinner=False)
-def get_mistral_client():
-    api_key = os.environ.get("MISTRAL_API_KEY")
+def _build_mistral_client(api_key: str):
     if not api_key or not MISTRAL_SDK_AVAILABLE:
         return None
     try:
@@ -908,11 +923,17 @@ def get_mistral_client():
         return None
 
 
+def get_mistral_client():
+    api_key = get_effective_api_key("mistral_api_key_override", "MISTRAL_API_KEY")
+    return _build_mistral_client(api_key)
+
+
 def generate_ai_report(context, loan_info, forecast_note):
     client = get_mistral_client()
     if client is None:
-        return ("\u26a0\ufe0f Mistral API key not found or SDK not installed. Set the `MISTRAL_API_KEY` "
-                "environment variable to enable AI-generated reports.")
+        return ("\u26a0\ufe0f Mistral API key not found or SDK not installed. Paste a key in "
+                "Settings \u2192 API Keys, or set the `MISTRAL_API_KEY` environment variable, "
+                "to enable AI-generated reports.")
     prompt = f"""
 Write a professional financial report for a bank customer using the data below.
 Structure the report with these exact section headings:
@@ -1516,18 +1537,57 @@ def page_settings(user_id):
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("#### API Key Status")
+    st.markdown("#### API Keys")
+    st.caption(
+        "Paste a key here to enable AI features for **this session only** — it is kept in "
+        "memory, never written to disk or the database, and is cleared when you close or "
+        "refresh the browser tab. If an environment variable is also set, the key entered "
+        "here takes priority."
+    )
+
+    if "groq_api_key_override" not in st.session_state:
+        st.session_state.groq_api_key_override = ""
+    if "mistral_api_key_override" not in st.session_state:
+        st.session_state.mistral_api_key_override = ""
+
     c1, c2 = st.columns(2)
     with c1:
-        if os.environ.get("GROQ_API_KEY"):
-            st.markdown('<span class="badge-good">Groq: Connected</span>', unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="badge-bad">Groq: Missing GROQ_API_KEY</span>', unsafe_allow_html=True)
+        groq_key_input = st.text_input(
+            "Groq API Key", value=st.session_state.groq_api_key_override,
+            type="password", placeholder="gsk_...", key="groq_key_input",
+        )
+        groq_active = bool(groq_key_input.strip()) or bool(os.environ.get("GROQ_API_KEY"))
+        badge_cls = "badge-good" if groq_active else "badge-bad"
+        badge_txt = "Groq: Active" if groq_active else "Groq: No key set"
+        st.markdown(f'<span class="{badge_cls}">{badge_txt}</span>', unsafe_allow_html=True)
     with c2:
-        if os.environ.get("MISTRAL_API_KEY"):
-            st.markdown('<span class="badge-good">Mistral: Connected</span>', unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="badge-bad">Mistral: Missing MISTRAL_API_KEY</span>', unsafe_allow_html=True)
+        mistral_key_input = st.text_input(
+            "Mistral API Key", value=st.session_state.mistral_api_key_override,
+            type="password", placeholder="...", key="mistral_key_input",
+        )
+        mistral_active = bool(mistral_key_input.strip()) or bool(os.environ.get("MISTRAL_API_KEY"))
+        badge_cls = "badge-good" if mistral_active else "badge-bad"
+        badge_txt = "Mistral: Active" if mistral_active else "Mistral: No key set"
+        st.markdown(f'<span class="{badge_cls}">{badge_txt}</span>', unsafe_allow_html=True)
+
+    kc1, kc2 = st.columns(2)
+    with kc1:
+        if st.button("💾 Use these keys for this session", use_container_width=True):
+            st.session_state.groq_api_key_override = groq_key_input.strip()
+            st.session_state.mistral_api_key_override = mistral_key_input.strip()
+            # Clear cached clients so the new key takes effect immediately
+            _build_groq_client.clear()
+            _build_mistral_client.clear()
+            st.success("Session API keys updated.")
+            st.rerun()
+    with kc2:
+        if st.button("🧹 Clear session keys", use_container_width=True):
+            st.session_state.groq_api_key_override = ""
+            st.session_state.mistral_api_key_override = ""
+            _build_groq_client.clear()
+            _build_mistral_client.clear()
+            st.info("Session API keys cleared.")
+            st.rerun()
 
     st.markdown("---")
     st.markdown("#### Data Management")

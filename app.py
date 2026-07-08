@@ -43,10 +43,15 @@ except ImportError:
     GROQ_SDK_AVAILABLE = False
 
 try:
-    from mistralai import Mistral
+    from mistralai.client import Mistral
     MISTRAL_SDK_AVAILABLE = True
 except ImportError:
-    MISTRAL_SDK_AVAILABLE = False
+    try:
+        # Older/alternate mistralai versions expose Mistral at the top level
+        from mistralai import Mistral
+        MISTRAL_SDK_AVAILABLE = True
+    except ImportError:
+        MISTRAL_SDK_AVAILABLE = False
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -915,25 +920,35 @@ def ask_ai_advisor(question, context, model_name):
 ####################################
 @st.cache_resource(show_spinner=False)
 def _build_mistral_client(api_key: str):
-    if not api_key or not MISTRAL_SDK_AVAILABLE:
-        return None
     try:
-        return Mistral(api_key=api_key)
-    except Exception:
-        return None
+        return Mistral(api_key=api_key), None
+    except Exception as e:
+        return None, str(e)
 
 
 def get_mistral_client():
+    if not MISTRAL_SDK_AVAILABLE:
+        return None, "missing_sdk", None
     api_key = get_effective_api_key("mistral_api_key_override", "MISTRAL_API_KEY")
-    return _build_mistral_client(api_key)
+    if not api_key:
+        return None, "missing_key", None
+    client, init_error = _build_mistral_client(api_key)
+    if client is None:
+        return None, "init_failed", init_error
+    return client, None, None
 
 
 def generate_ai_report(context, loan_info, forecast_note):
-    client = get_mistral_client()
+    client, reason, detail = get_mistral_client()
     if client is None:
-        return ("\u26a0\ufe0f Mistral API key not found or SDK not installed. Paste a key in "
-                "Settings \u2192 API Keys, or set the `MISTRAL_API_KEY` environment variable, "
-                "to enable AI-generated reports.")
+        if reason == "missing_sdk":
+            return ("\u26a0\ufe0f The `mistralai` Python package is not installed in this "
+                    "environment. Run `pip install mistralai` and restart the app.")
+        if reason == "missing_key":
+            return ("\u26a0\ufe0f No Mistral API key found. Paste one in Settings \u2192 API Keys "
+                    "(and click **Use these keys for this session**), or set the "
+                    "`MISTRAL_API_KEY` environment variable.")
+        return f"\u26a0\ufe0f Mistral client failed to initialize: {detail}"
     prompt = f"""
 Write a professional financial report for a bank customer using the data below.
 Structure the report with these exact section headings:
@@ -1556,19 +1571,25 @@ def page_settings(user_id):
             "Groq API Key", value=st.session_state.groq_api_key_override,
             type="password", placeholder="gsk_...", key="groq_key_input",
         )
-        groq_active = bool(groq_key_input.strip()) or bool(os.environ.get("GROQ_API_KEY"))
-        badge_cls = "badge-good" if groq_active else "badge-bad"
-        badge_txt = "Groq: Active" if groq_active else "Groq: No key set"
-        st.markdown(f'<span class="{badge_cls}">{badge_txt}</span>', unsafe_allow_html=True)
+        has_key = bool(groq_key_input.strip()) or bool(os.environ.get("GROQ_API_KEY"))
+        if not GROQ_SDK_AVAILABLE:
+            st.markdown('<span class="badge-bad">Groq: `groq` package not installed</span>', unsafe_allow_html=True)
+        elif has_key:
+            st.markdown('<span class="badge-good">Groq: Active</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="badge-bad">Groq: No key set</span>', unsafe_allow_html=True)
     with c2:
         mistral_key_input = st.text_input(
             "Mistral API Key", value=st.session_state.mistral_api_key_override,
             type="password", placeholder="...", key="mistral_key_input",
         )
-        mistral_active = bool(mistral_key_input.strip()) or bool(os.environ.get("MISTRAL_API_KEY"))
-        badge_cls = "badge-good" if mistral_active else "badge-bad"
-        badge_txt = "Mistral: Active" if mistral_active else "Mistral: No key set"
-        st.markdown(f'<span class="{badge_cls}">{badge_txt}</span>', unsafe_allow_html=True)
+        has_key = bool(mistral_key_input.strip()) or bool(os.environ.get("MISTRAL_API_KEY"))
+        if not MISTRAL_SDK_AVAILABLE:
+            st.markdown('<span class="badge-bad">Mistral: `mistralai` package not installed</span>', unsafe_allow_html=True)
+        elif has_key:
+            st.markdown('<span class="badge-good">Mistral: Active</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="badge-bad">Mistral: No key set</span>', unsafe_allow_html=True)
 
     kc1, kc2 = st.columns(2)
     with kc1:

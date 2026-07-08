@@ -85,3 +85,10 @@ Imports → Configuration → Custom CSS → Database Functions → Authenticati
 - Data resets are irreversible — the Settings page requires an explicit confirmation checkbox before wiping the database.
 - CSV uploads must include the columns: `date, category, description, amount, type`.
 - All monetary values respect the currency selected in Settings (INR, USD, EUR, GBP).
+
+
+
+
+
+
+https://utzoudatf7q7v2nrfskmyk.streamlit.app/- The link of the app.

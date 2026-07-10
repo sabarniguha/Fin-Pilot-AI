@@ -904,10 +904,20 @@ def logout():
 # Financial Analytics
 ####################################
 def compute_summary(df: pd.DataFrame) -> dict:
-    """Single source of truth for all headline financial numbers (avoids duplicate calc)."""
+    """
+    Single source of truth for all headline financial numbers (avoids duplicate calc).
+
+    NOTE on income/expenses: these are ALL-TIME totals across every transaction on record
+    (used for lifetime balance and savings-rate). For anything compared against a monthly
+    figure (EMIs, loan affordability, 'Monthly Income/Expenses' dashboard cards) use
+    avg_monthly_income / avg_monthly_expenses / avg_monthly_savings instead — mixing the
+    two was the root cause of inflated loan eligibility and mislabeled dashboard KPIs.
+    """
     if df.empty:
         return dict(income=0.0, expenses=0.0, savings=0.0, balance=0.0,
-                     investments=0.0, emergency_fund=0.0, savings_rate=0.0)
+                     investments=0.0, emergency_fund=0.0, savings_rate=0.0,
+                     months_tracked=0, avg_monthly_income=0.0, avg_monthly_expenses=0.0,
+                     avg_monthly_savings=0.0)
 
     income = df.loc[df["type"] == "income", "amount"].sum()
     expenses = df.loc[df["type"] == "expense", "amount"].sum()
@@ -917,10 +927,17 @@ def compute_summary(df: pd.DataFrame) -> dict:
     emergency_fund = max(savings, 0) * 0.6
     balance = savings
 
+    months_tracked = max(df["date"].dt.to_period("M").nunique(), 1)
+    avg_monthly_income = float(income) / months_tracked
+    avg_monthly_expenses = float(expenses) / months_tracked
+    avg_monthly_savings = avg_monthly_income - avg_monthly_expenses
+
     return dict(
         income=float(income), expenses=float(expenses), savings=float(savings),
         balance=float(balance), investments=float(investments),
         emergency_fund=float(emergency_fund), savings_rate=float(savings_rate),
+        months_tracked=int(months_tracked), avg_monthly_income=avg_monthly_income,
+        avg_monthly_expenses=avg_monthly_expenses, avg_monthly_savings=avg_monthly_savings,
     )
 
 
@@ -1108,9 +1125,9 @@ def analyze_loans(user_id, summary):
     total_emi = float(df["emi"].sum()) if not df.empty else 0.0
     total_principal = float(df["principal"].sum()) if not df.empty else 0.0
 
-    income = max(summary["income"], 1)
-    debt_ratio = total_emi / income * 100
-    safe_emi = max(income * 0.40 - total_emi, 0)
+    monthly_income = max(summary.get("avg_monthly_income", summary["income"]), 1)
+    debt_ratio = total_emi / monthly_income * 100
+    safe_emi = max(monthly_income * 0.40 - total_emi, 0)
 
     # Rough affordability estimate for a new loan at ~9% p.a. over 5 years (annuity formula)
     annual_rate, years = 0.09, 5
@@ -1194,8 +1211,8 @@ def compute_budget_utilization(user_id, df):
 # Risk, Stability & Credit metrics
 ####################################
 def compute_debt_to_income(summary, loan_analysis):
-    income = max(summary["income"], 1)
-    return round(loan_analysis["total_emi"] / income * 100, 1)
+    monthly_income = max(summary.get("avg_monthly_income", summary["income"]), 1)
+    return round(loan_analysis["total_emi"] / monthly_income * 100, 1)
 
 
 def compute_financial_stability_index(health, networth, emergency, budget_util):
@@ -1534,10 +1551,13 @@ def build_financial_context(user_id, df, summary, health, forecast_note, currenc
     context = f"""
 FINANCIAL PROFILE (all figures are the user's real, current data — never invent numbers not shown here)
 
-Income & Cash Flow:
-- Monthly-equivalent Income: {format_currency(summary['income'], currency)}
-- Total Expenses: {format_currency(summary['expenses'], currency)}
-- Net Savings: {format_currency(summary['savings'], currency)}
+Income & Cash Flow (based on {summary['months_tracked']} month(s) of transaction history):
+- Average Monthly Income: {format_currency(summary['avg_monthly_income'], currency)}
+- Average Monthly Expenses: {format_currency(summary['avg_monthly_expenses'], currency)}
+- Average Monthly Net Cash Flow: {format_currency(summary['avg_monthly_savings'], currency)}
+- All-Time Total Income: {format_currency(summary['income'], currency)}
+- All-Time Total Expenses: {format_currency(summary['expenses'], currency)}
+- All-Time Net Savings: {format_currency(summary['savings'], currency)}
 - Savings Rate: {summary['savings_rate']:.1f}%
 
 Net Worth:
@@ -2073,16 +2093,19 @@ def page_dashboard(user_id, currency):
     goal_completion = compute_goal_completion_pct(goals)
 
     # --- Row 1: core cash-flow KPIs ---
+    # "Monthly" cards use the average-per-month figures (avg_monthly_income / avg_monthly_expenses),
+    # NOT the all-time totals — mixing the two previously inflated these numbers by however many
+    # months of history existed, which also cascaded into an inflated Loan Eligibility estimate below.
     cols = st.columns(4)
     with cols[0]:
         metric_card("Current Balance", format_currency(summary["balance"], currency))
     with cols[1]:
-        metric_card("Monthly Income", format_currency(summary["income"], currency))
+        metric_card("Monthly Income", format_currency(summary["avg_monthly_income"], currency))
     with cols[2]:
-        metric_card("Monthly Expenses", format_currency(summary["expenses"], currency))
+        metric_card("Monthly Expenses", format_currency(summary["avg_monthly_expenses"], currency))
     with cols[3]:
-        metric_card("Net Cash Flow", format_currency(summary["savings"], currency),
-                     delta=f"{summary['savings_rate']:.1f}% savings rate", delta_positive=summary["savings"] >= 0)
+        metric_card("Net Cash Flow", format_currency(summary["avg_monthly_savings"], currency),
+                     delta=f"{summary['savings_rate']:.1f}% savings rate", delta_positive=summary["avg_monthly_savings"] >= 0)
 
     # --- Row 2: health, worth & fund KPIs ---
     cols2 = st.columns(4)
@@ -2098,7 +2121,7 @@ def page_dashboard(user_id, currency):
                      delta=f"{investments['growth_pct']}%", delta_positive=investments["growth_pct"] >= 0)
 
     # --- Row 3: risk & efficiency KPIs ---
-    loan_quick = predict_loan_eligibility(35, max(summary["income"], 1), 700, loans["total_emi"], 1)
+    loan_quick = predict_loan_eligibility(35, max(summary["avg_monthly_income"], 1), 700, loans["total_emi"], 1)
     cols3 = st.columns(4)
     with cols3[0]:
         metric_card("Loan Eligibility %", f"{loan_quick.get('probability', 0)}%")
@@ -2613,15 +2636,17 @@ def page_loan_eligibility(user_id, currency):
 
     st.markdown("---")
     st.markdown("#### \U0001f9ee New Loan Eligibility Check (ML Model)")
+    default_salary = max(summary.get("avg_monthly_income", 0) or 60000.0, 5000.0)
+    default_existing_loans = min(len(loan_analysis["rows"]), 5) if not loan_analysis["rows"].empty else 1
     with st.form("loan_form"):
         c1, c2 = st.columns(2)
         with c1:
             age = st.slider("Age", 21, 65, 32)
-            salary = st.number_input("Monthly Salary", min_value=5000.0, value=max(summary["income"], 60000.0), step=1000.0)
+            salary = st.number_input("Monthly Salary", min_value=5000.0, value=float(default_salary), step=1000.0)
             credit_score = st.slider("Credit Score", 300, 900, 720)
         with c2:
             emi = st.number_input("Current Monthly EMI", min_value=0.0, value=loan_analysis["total_emi"] or 5000.0, step=500.0)
-            existing_loans = st.slider("Existing Loans", 0, 5, len(loan_analysis["rows"]) if not loan_analysis["rows"].empty else 1)
+            existing_loans = st.slider("Existing Loans", 0, 5, default_existing_loans)
         submitted = st.form_submit_button("Check Eligibility", width='stretch')
 
     if submitted:
@@ -2873,14 +2898,20 @@ def page_forecast(user_id, currency, default_months=6):
     if note:
         st.caption(f"\u2139\ufe0f {note}")
 
+    ms = monthly_series(df)
+    last_actual_date = ms["month"].max()
+
+    # Only scale genuinely FUTURE periods by the scenario factor — scaling the historical fit
+    # too (the old behaviour) made the forecast line diverge from real history even in the past.
     adj = {"Optimistic": 1.10, "Realistic": 1.0, "Worst Case": 0.85}[scenario]
     scenario_df = forecast_df.copy()
-    scenario_df["yhat"] = scenario_df["yhat"] * adj
-    scenario_df["yhat_lower"] = scenario_df["yhat_lower"] * adj
-    scenario_df["yhat_upper"] = scenario_df["yhat_upper"] * adj
+    future_mask = scenario_df["ds"] > last_actual_date
+    for col in ["yhat", "yhat_lower", "yhat_upper"]:
+        scenario_df.loc[future_mask, col] = scenario_df.loc[future_mask, col] * adj
 
-    ms = monthly_series(df)
-    render_forecast_chart(scenario_df, ms, f"{metric.capitalize()} ({scenario})", currency)
+    # Pass only the selected metric's historical column so the "Actual" trace matches what was
+    # actually chosen above (previously this always plotted Income regardless of selection).
+    render_forecast_chart(scenario_df, ms[["month", metric]], f"{metric.capitalize()} ({scenario})", currency)
 
     st.session_state["last_forecast_note"] = (
         f"{metric.capitalize()} projected ({scenario} scenario) to reach "

@@ -313,17 +313,25 @@ def plotly_theme():
 
 
 def progress_bar(label, pct, sub=""):
-    pct_clamped = max(0, min(100, pct))
+    """Renders a label + percentage + native Streamlit progress bar + caption.
+    Uses st.progress() (a real widget) instead of a hand-rolled HTML/CSS bar —
+    raw injected <div> width styling does not reliably re-render on every
+    Streamlit rerun, which was causing the bar to visually 'stick' even when
+    the underlying percentage had changed."""
+    pct_clamped = max(0.0, min(100.0, float(pct)))
     color = COLORS["accent"] if pct_clamped >= 66 else COLORS["warning"] if pct_clamped >= 33 else COLORS["danger"]
-    st.markdown(f"""
-    <div style="margin-bottom:14px;">
-        <div style="display:flex; justify-content:space-between; font-size:13px; color:#374151;">
-            <span>{label}</span><span style="font-weight:600;">{pct_clamped:.0f}%</span>
-        </div>
-        <div class="progress-track"><div class="progress-fill" style="width:{pct_clamped}%; background:{color};"></div></div>
-        <div style="font-size:12px; color:#6B7280; margin-top:2px;">{sub}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="display:flex; justify-content:space-between; font-size:13px; '
+        f'color:#374151; margin-bottom:2px;"><span>{label}</span>'
+        f'<span style="font-weight:600; color:{color};">{pct_clamped:.0f}%</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.progress(pct_clamped / 100.0)
+    if sub:
+        st.markdown(
+            f'<div style="font-size:12px; color:#6B7280; margin-top:-8px; margin-bottom:12px;">{sub}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 ####################################

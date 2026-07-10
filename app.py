@@ -264,19 +264,22 @@ def inject_custom_css():
         .badge-warn {{ background: rgba(245,158,11,0.15); color: {COLORS['warning']}; padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: 12px;}}
         .badge-bad {{ background: rgba(239,68,68,0.15); color: {COLORS['danger']}; padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: 12px;}}
 
-        .progress-track {{
-            background: rgba(0,0,0,0.06);
-            border-radius: 999px;
-            height: 10px;
-            width: 100%;
-            overflow: hidden;
-            margin-top: 6px;
+        /* Native st.progress() styling — makes the TRACK visible even at 0%.
+           Streamlit's default track color is very light and was blending into
+           this app's background, making empty (0%) bars look like they weren't
+           rendering at all even though the widget was present with the correct value. */
+        div[data-testid="stProgress"] {{
+            margin-top: 2px;
+            margin-bottom: 4px;
         }}
-        .progress-fill {{
-            height: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, {COLORS['primary']}, {COLORS['accent']});
-            transition: width 0.6s ease;
+        div[data-testid="stProgressBarTrack"] {{
+            background-color: rgba(4, 106, 56, 0.14) !important;
+            height: 10px !important;
+            border-radius: 999px !important;
+        }}
+        div[data-testid="stProgressBarTrack"] > div {{
+            background: linear-gradient(90deg, {COLORS['primary']}, {COLORS['accent']}) !important;
+            border-radius: 999px !important;
         }}
         .skeleton {{
             background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%);

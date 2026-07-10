@@ -1199,13 +1199,30 @@ def get_budget_allocations(user_id, month) -> dict:
 
 
 def compute_budget_utilization(user_id, df):
-    """Compare this month's actual spend per category against saved budget allocations."""
-    month = datetime.now().strftime("%Y-%m")
-    budget = get_budget_allocations(user_id, month)
-    if not budget or df.empty:
-        return dict(total_budget=0.0, total_spent=0.0, utilization_pct=0.0, remaining=0.0, by_category={})
+    """
+    Compare actual spend per category against saved budget allocations.
 
-    this_month = df[(df["type"] == "expense") & (df["date"].dt.strftime("%Y-%m") == month)]
+    Falls back to the most recent month that actually has expense transactions if the
+    literal current calendar month has none yet — otherwise every category would show a
+    misleading flat 0% for anyone whose transaction history (e.g. demo/seed data) doesn't
+    happen to include anything dated in the real current month.
+    """
+    current_month = datetime.now().strftime("%Y-%m")
+    budget = get_budget_allocations(user_id, current_month)
+    if not budget or df.empty:
+        return dict(total_budget=0.0, total_spent=0.0, utilization_pct=0.0, remaining=0.0,
+                     by_category={}, month_label="", is_current_month=True)
+
+    expense_df = df[df["type"] == "expense"]
+    month = current_month
+    is_current_month = True
+    if expense_df.empty or current_month not in expense_df["date"].dt.strftime("%Y-%m").values:
+        available_months = sorted(expense_df["date"].dt.strftime("%Y-%m").unique()) if not expense_df.empty else []
+        if available_months:
+            month = available_months[-1]
+            is_current_month = (month == current_month)
+
+    this_month = expense_df[expense_df["date"].dt.strftime("%Y-%m") == month]
     spent_by_cat = this_month.groupby("category")["amount"].sum().to_dict()
 
     total_budget = sum(budget.values())
@@ -1213,9 +1230,11 @@ def compute_budget_utilization(user_id, df):
     utilization_pct = (total_spent / total_budget * 100) if total_budget > 0 else 0.0
 
     by_category = {cat: dict(budget=amt, spent=spent_by_cat.get(cat, 0)) for cat, amt in budget.items()}
+    month_label = pd.Period(month).strftime("%B %Y") if month else ""
 
     return dict(total_budget=total_budget, total_spent=total_spent, utilization_pct=round(utilization_pct, 1),
-                remaining=total_budget - total_spent, by_category=by_category)
+                remaining=total_budget - total_spent, by_category=by_category,
+                month_label=month_label, is_current_month=is_current_month)
 
 
 ####################################
@@ -2517,7 +2536,8 @@ def page_budget_planner(user_id, currency):
             utilities = st.number_input("Utilities", min_value=0.0, value=float(existing.get("Utilities", 2500.0)), step=200.0)
         with c3:
             insurance = st.number_input("Insurance", min_value=0.0, value=float(existing.get("Insurance", 2000.0)), step=200.0)
-            emis = st.number_input("EMIs", min_value=0.0, value=float(existing.get("EMIs", 9000.0)), step=500.0)
+            emis = st.number_input("EMIs", min_value=0.0,
+                                    value=float(existing.get("EMI", existing.get("EMIs", 9000.0))), step=500.0)
             savings_goal = st.number_input("Savings Goal", min_value=0.0, value=float(existing.get("Savings Goal", 10000.0)), step=500.0)
         submitted = st.form_submit_button("Save & Analyze Budget", width='stretch')
 
@@ -2529,7 +2549,7 @@ def page_budget_planner(user_id, currency):
             "Travel": travel if submitted else existing.get("Travel", 0),
             "Utilities": utilities if submitted else existing.get("Utilities", 0),
             "Insurance": insurance if submitted else existing.get("Insurance", 0),
-            "EMIs": emis if submitted else existing.get("EMIs", 0),
+            "EMI": emis if submitted else existing.get("EMI", existing.get("EMIs", 0)),
         }
         salary_val = salary if submitted else existing.get("Salary", 0)
         savings_goal_val = savings_goal if submitted else existing.get("Savings Goal", 0)
@@ -2537,7 +2557,7 @@ def page_budget_planner(user_id, currency):
         if submitted:
             save_budget_allocations(user_id, month, {
                 "Salary": salary, "Rent": rent, "Food": food, "Shopping": shopping, "Travel": travel,
-                "Utilities": utilities, "Insurance": insurance, "EMIs": emis, "Savings Goal": savings_goal,
+                "Utilities": utilities, "Insurance": insurance, "EMI": emis, "Savings Goal": savings_goal,
             })
             st.success("Budget saved — it now feeds the Dashboard, Financial Health, Forecast, Reports and AI Advisor.")
 
@@ -2569,7 +2589,7 @@ def page_budget_planner(user_id, currency):
 
         recommended = {
             "Rent": 0.30, "Food": 0.12, "Shopping": 0.08, "Travel": 0.05,
-            "Utilities": 0.05, "Insurance": 0.05, "EMIs": 0.15,
+            "Utilities": 0.05, "Insurance": 0.05, "EMI": 0.15,
         }
         rec_df = pd.DataFrame({
             "Category": list(recommended.keys()),
@@ -2585,7 +2605,16 @@ def page_budget_planner(user_id, currency):
         df = load_transactions(user_id)
         util = compute_budget_utilization(user_id, df)
         if util.get("total_budget"):
-            st.markdown("##### This Month's Actual vs Budget")
+            if util.get("month_label"):
+                if util.get("is_current_month"):
+                    st.markdown(f"##### This Month's Actual vs Budget ({util['month_label']})")
+                else:
+                    st.markdown(f"##### Actual vs Budget — {util['month_label']}")
+                    st.caption(f"No expense transactions are logged for {datetime.now().strftime('%B %Y')} yet, "
+                               f"so this shows your most recent month with expense data instead. Add a "
+                               f"transaction dated this month to see it update.")
+            else:
+                st.markdown("##### This Month's Actual vs Budget")
             for cat, vals in util["by_category"].items():
                 pct = (vals["spent"] / vals["budget"] * 100) if vals["budget"] else 0
                 progress_bar(cat, pct, f"{format_currency(vals['spent'], currency)} of {format_currency(vals['budget'], currency)}")
